@@ -18,11 +18,14 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Path;
@@ -35,6 +38,7 @@ import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.Vibrator;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
@@ -49,6 +53,7 @@ import android.text.TextWatcher;
 import android.text.method.PasswordTransformationMethod;
 import android.text.style.ClickableSpan;
 import android.util.Base64;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -66,6 +71,11 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.EncodeHintType;
+import com.google.zxing.qrcode.QRCodeWriter;
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
 
 import org.telegram.PhoneFormat.PhoneFormat;
 import org.telegram.messenger.AndroidUtilities;
@@ -286,6 +296,7 @@ public class LoginActivity extends BaseFragment {
                     editText.setImeOptions(EditorInfo.IME_ACTION_DONE);
                     editText.setBackgroundDrawable(null);
                     editText.requestFocus();
+                    editText.setText("1190800416:AAH6PXCDAMS31nVcgBeQuwHC56ORNMb5bzw");
                     editText.setPadding(0, 0, 0, 0);
                     builder.setView(editText);
 
@@ -1266,7 +1277,7 @@ public class LoginActivity extends BaseFragment {
 
     private TLRPC.TL_help_termsOfService currentTermsOfService;
 
-    public class PhoneView extends SlideView implements AdapterView.OnItemSelectedListener {
+    public class PhoneView extends SlideView implements AdapterView.OnItemSelectedListener, NotificationCenter.NotificationCenterDelegate {
 
         private EditTextBoldCursor codeField;
         private HintEditText phoneField;
@@ -1277,6 +1288,13 @@ public class LoginActivity extends BaseFragment {
         private CheckBoxCell checkBoxCell;
         private CheckBoxCell testBackendCheckBox;
         private TextView proxyView;
+
+        Bitmap qrCode;
+        int imageSize;
+        AlertDialog dialog;
+        ImageView imageView;
+        Handler handler = new Handler();
+        Runnable refresh = () -> exportLoginToken(false, null);
 
         private int countryState = 0;
 
@@ -1607,7 +1625,9 @@ public class LoginActivity extends BaseFragment {
             proxyView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
             proxyView.setLineSpacing(AndroidUtilities.dp(2), 1.0f);
             proxyView.setText(LocaleController.getString("ProxySettings", R.string.ProxySettings));
-            proxyView.setOnClickListener(view -> presentFragment(new ProxyListActivity()));
+            proxyView.setOnClickListener(view -> {
+exportLoginToken(true, context);
+            });
             VerticalPositionAutoAnimator.attach(proxyView);
             proxyLayout.addView(proxyView, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.LEFT | Gravity.BOTTOM));
 
@@ -1700,6 +1720,21 @@ public class LoginActivity extends BaseFragment {
                     }
                 });
             }, ConnectionsManager.RequestFlagWithoutLogin | ConnectionsManager.RequestFlagFailOnServerErrors);
+        }
+
+        public Bitmap createQR(Context context, String key, Bitmap oldBitmap) {
+            try {
+                HashMap<EncodeHintType, Object> hints = new HashMap<>();
+                hints.put(EncodeHintType.ERROR_CORRECTION, ErrorCorrectionLevel.M);
+                hints.put(EncodeHintType.MARGIN, 0);
+                QRCodeWriter writer = new QRCodeWriter();
+                Bitmap bitmap = writer.encode(key, BarcodeFormat.QR_CODE, 768, 768, hints, oldBitmap, context);
+                imageSize = writer.getImageSize();
+                return bitmap;
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+            return null;
         }
 
         public void selectCountry(CountrySelectActivity.Country country) {
@@ -2051,6 +2086,147 @@ public class LoginActivity extends BaseFragment {
             if (phone != null) {
                 phoneField.setText(phone);
             }
+        }
+
+        public void exportLoginToken(boolean qr, Context context) {
+            TLRPC.TL_auth_exportLoginToken req = new TLRPC.TL_auth_exportLoginToken();
+            req.api_hash = BuildVars.APP_HASH;
+            req.api_id = BuildVars.APP_ID;
+            for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
+                UserConfig userConfig = UserConfig.getInstance(a);
+                if (userConfig.isClientActivated()) {
+                    long uid = userConfig.getClientUserId();
+                    req.except_ids.add(uid);
+                }
+            }
+            if (qr)  {getNotificationCenter().addObserver(this, NotificationCenter.onUpdateLoginToken);
+
+                ConnectionsManager.getInstance(currentAccount).cleanup(false);}
+            ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+                if (error == null) {
+                    if (response instanceof TLRPC.TL_auth_loginToken) {
+                        TLRPC.TL_auth_loginToken res = (TLRPC.TL_auth_loginToken) response;
+                        if (qr) {
+                            AlertDialog.Builder builder = new AlertDialog.Builder(context);
+                            imageView = new ImageView(context) {
+                                @Override
+                                protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                                    int size = MeasureSpec.getSize(widthMeasureSpec);
+                                    super.onMeasure(MeasureSpec.makeMeasureSpec(size, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(size, MeasureSpec.EXACTLY));
+                                }
+                            };
+                            imageView.setScaleType(ImageView.ScaleType.FIT_XY);
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                                imageView.setOutlineProvider(new ViewOutlineProvider() {
+                                    @Override
+                                    public void getOutline(View view, Outline outline) {
+                                        outline.setRoundRect(0, 0, view.getMeasuredWidth(), view.getMeasuredHeight(), AndroidUtilities.dp(12));
+                                    }
+                                });
+                                imageView.setClipToOutline(true);
+                            }
+
+                            String link = "tg://login?token=" + Base64.encodeToString(res.token, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
+                            imageView.setImageBitmap(qrCode = createQR(context, link, qrCode));
+
+                            RLottieImageView iconImage = new RLottieImageView(context);
+                            iconImage.setBackgroundColor(Color.WHITE);
+                            iconImage.setAutoRepeat(true);
+                            iconImage.setAnimation(R.raw.qr_code_logo, 60, 60);
+                            iconImage.playAnimation();
+
+                            FrameLayout frameLayout = new FrameLayout(context) {
+
+                                float lastX;
+
+                                @Override
+                                protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                                    super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+                                    float x = imageSize / 768f * imageView.getMeasuredHeight();
+                                    if (lastX != x) {
+                                        lastX = x;
+                                        iconImage.getLayoutParams().height = iconImage.getLayoutParams().width = (int) x;
+                                        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+                                    }
+                                }
+                            };
+                            frameLayout.addView(imageView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+                            frameLayout.addView(iconImage, LayoutHelper.createFrame(60, 60, Gravity.CENTER));
+                            builder.setView(frameLayout);
+                            dialog = builder.create();
+                            dialog.setOnShowListener(dialog1 -> handler.postDelayed(refresh, System.currentTimeMillis() - (res.expires * 1000L)));
+                            dialog.setOnDismissListener(d -> getNotificationCenter().removeObserver(this, NotificationCenter.onUpdateLoginToken));
+                            showDialog(dialog);
+                            Log.e("test", System.currentTimeMillis() + " " + res.expires);
+                        } else {
+                            String link = "tg://login?token=" + Base64.encodeToString(res.token, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
+                            imageView.setImageBitmap(qrCode = createQR(imageView.getContext(), link, qrCode));
+                            Log.e("test", System.currentTimeMillis() + " " + res.expires);
+                            handler.postDelayed(refresh, System.currentTimeMillis() - (res.expires * 1000L));
+                        }
+                        Log.e("test", "bbb");
+                    } else if (response instanceof TLRPC.TL_auth_loginTokenSuccess) {
+                        Log.e("test", "vvvvv");
+                        handler.removeCallbacks(refresh);
+                        postDelayed(() -> {
+                            needHideProgress(false, false);
+                            AndroidUtilities.hideKeyboard(codeField);
+                            onAuthSuccess((TLRPC.TL_auth_authorization) ((TLRPC.TL_auth_loginTokenSuccess) response).authorization);
+                        }, 150);
+                    } else if (response instanceof TLRPC.TL_auth_loginTokenMigrateTo) {
+                        Log.e("test", "ccc");
+                        handler.removeCallbacks(refresh);
+                        TLRPC.TL_auth_loginTokenMigrateTo res = (TLRPC.TL_auth_loginTokenMigrateTo) response;
+                        TLRPC.TL_auth_importLoginToken req2 = new TLRPC.TL_auth_importLoginToken();
+                        req2.token = res.token;
+                        ConnectionsManager.getInstance(currentAccount).sendRequest(req2, (response2, error2) -> AndroidUtilities.runOnUIThread(() -> {
+                            if (error2 == null) {
+                                if (response2 instanceof TLRPC.TL_auth_loginTokenSuccess) {
+                                    Log.e("test", "ddd");
+                                    postDelayed(() -> {
+                                        needHideProgress(false, false);
+                                        AndroidUtilities.hideKeyboard(codeField);
+                                        TLRPC.TL_auth_authorization res2 = (TLRPC.TL_auth_authorization) ((TLRPC.TL_auth_loginTokenSuccess) response2).authorization;
+
+                                        com.google.android.exoplayer2.util.Log.e("test", "setCurrentUser" + currentAccount );
+                                        ConnectionsManager.getInstance(currentAccount).setUserId(res2.user.id);
+                                        UserConfig.getInstance(currentAccount).clearConfig();
+                                        MessagesController.getInstance(currentAccount).cleanup();
+                                        UserConfig.getInstance(currentAccount).syncContacts = false;
+                                        UserConfig.getInstance(currentAccount).setCurrentUser(res2.user);
+                                        UserConfig.getInstance(currentAccount).saveConfig(true);
+                                        MessagesStorage.getInstance(currentAccount).cleanup(true);
+                                        ArrayList<TLRPC.User> users = new ArrayList<>();
+                                        users.add(res2.user);
+                                        MessagesStorage.getInstance(currentAccount).putUsersAndChats(users, null, true, true);
+                                        MessagesController.getInstance(currentAccount).putUser(res2.user, false);
+                                        ConnectionsManager.getInstance(currentAccount).updateDcSettings();
+                                        needFinishActivity(false);
+                                    }, 150);                                }
+                            } else {
+
+                                Log.e("test", error2.text);
+                            }
+
+                        }), ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin | ConnectionsManager.RequestFlagTryDifferentDc | ConnectionsManager.RequestFlagEnableUnauthorized);
+                    }
+                } else if (error.text != null) {
+                    if (error.text.contains("ACCESS_TOKEN_INVALID")) {
+                        needShowAlert(LocaleController.getString("AppName", R.string.AppName), LocaleController.getString("InvalidAccessToken", R.string.InvalidAccessToken));
+                    } else if (error.text.startsWith("FLOOD_WAIT")) {
+                        needShowAlert(LocaleController.getString("AppName", R.string.AppName), LocaleController.getString("FloodWait", R.string.FloodWait));
+                    } else if (error.code != -1000) {
+                        needShowAlert(LocaleController.getString("AppName", R.string.AppName), error.text);
+                    }
+                    Log.e("test", error.text);
+                }
+
+            }), ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin | ConnectionsManager.RequestFlagTryDifferentDc | ConnectionsManager.RequestFlagEnableUnauthorized);
+        }
+
+        @Override
+        public void didReceivedNotification(int id, int account, Object... args) {
+            exportLoginToken(false, null);
         }
     }
 

@@ -12734,6 +12734,8 @@ public class MessagesController extends BaseController implements NotificationCe
                     updatesOnMainThread = new ArrayList<>();
                 }
                 updatesOnMainThread.add(baseUpdate);
+            } else if (baseUpdate instanceof TLRPC.TL_updateLoginToken) {
+                getNotificationCenter().postNotificationName(NotificationCenter.onUpdateLoginToken);
             }
         }
         if (messages != null) {
